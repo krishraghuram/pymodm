@@ -1,0 +1,172 @@
+FileField.storage is None
+
+
+
+Define model.
+
+```
+"""
+Module models.py
+"""
+
+import pymodm
+
+class Article(pymodm.MongoModel):
+    file = pymodm.fields.FileField(mongo_name="f")
+    title = pymodm.fields.CharField(mongo_name="t")
+    subtitle = pymodm.fields.CharField(mongo_name="s")
+
+```
+
+
+
+Create instance and save it.
+
+```
+import pymodm
+from models import Article
+
+mongodb_uri = "mongodb://localhost:27017/db"
+pymodm.connection.connect(mongodb_uri)
+f = pymodm.files.File(open("temp.pdf", mode="rb"))
+Article(file=f, title="Temp").save()
+```
+
+
+
+Since I did not explicitly pass "storage" in the FileField's init, I cannot access
+`Article.file.storage` until I access `article.file`.
+
+```
+import pymodm
+from models import Article
+mongodb_uri = "mongodb://localhost:27017/db"
+pymodm.connection.connect(mongodb_uri)
+
+Article.file.storage  # Nothing 
+Article.file.storage is None  # True
+
+# Invoke FileField.__get__ of Article.file
+f = Article.objects.all()[0].file
+
+Article.file.storage  # Returns <pymodm.files.GridFSStorage object at 0x7f165e422898>
+```
+
+
+
+This would be fixed if we move the creation of default for FileField.storage from __get__ to __init__.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Trouble with FileField
+
+In pymodm, default value for FileField.storage is set in `__get__` instead of `__init__`.
+
+Thus, if I create `SomeModel`, 
+with a field `uploaded_file = FileField()`,
+and try to access the `storage` attribute, `SomeModel.uploaded_file.storage`
+
+It gives me `None`.
+
+
+
+## Why am I trying to access the storage attribute?
+
+Background :
+
+I'm building a HTTP API, and JSON is our choice of format.
+
+There are several models that have FileField's. For example, Report and Article.
+
+Sending binary file in JSON is not straightforward.
+Common methods used are base64 encoding or using "multipart/form-data".
+I dont want to use either. Instead, I'm setting up a separate api to serve files.
+
+`GET /files/{_id}`
+
+On the server side, I have to lookup the file using the ObjectId.
+The queryset api on Report and Article model is not sufficient for this.
+
+I need access to the underlying Storage instance,
+so that I can call `storage_instance.open(file_id)`
+
+
+## Questions
+
+
+1) Is there any reason why we setup the default in `__get__` and not `__init__`?
+
+2) Can I make a PR moving the `if self.storage is None:` block into `__init__`?
+
+
+
+
+```
+# Quick reference to the code of FileField
+class FileField(MongoBaseField):
+    _wrapper_class = FieldFile
+
+    def __init__(self, verbose_name=None, mongo_name=None,
+                 storage=None, **kwargs):
+        super(FileField, self).__init__(verbose_name=verbose_name,
+                                        mongo_name=mongo_name,
+                                        **kwargs)
+        self.storage = storage
+
+    def to_mongo(self, value):
+        ### some code ###
+
+    def _to_field_file(self, value, inst):
+        ### some code ###
+
+    def __get__(self, inst, owner):
+        MongoModelBase = _import('pymodm.base.models.MongoModelBase')
+        if inst is not None and isinstance(inst, MongoModelBase):
+            if self.storage is None:
+                gridfs = GridFSBucket(
+                    _get_db(self.model._mongometa.connection_alias))
+                self.storage = GridFSStorage(gridfs)
+            ### some code ###
+```
